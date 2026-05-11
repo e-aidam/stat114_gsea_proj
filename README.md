@@ -2,6 +2,10 @@
 
 Final project for Stat 114: *Introduction to Bioinformatics and Statistical Genetics*, focused on implementing a custom Gene Set Enrichment Analysis (GSEA) workflow to identify biological pathways associated with whole body hyperthermia (WBH) treatment.
 
+## Authors
+
+Victoria Chen, Anisha Kolambe, Ethan Aidam
+
 ## Project overview
 
 This repository contains the code, report, presentation materials, and RNA-seq processing scripts used for the final project analysis. The workflow begins with RNA-seq count generation and proceeds through differential expression analysis and a custom GSEA implementation in R.
