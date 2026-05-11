@@ -48,7 +48,7 @@ Column names are cleaned of BAM and tab-file suffixes added by STAR, and Ensembl
 
 ```{r load-counts}
 cnt <- read.csv(
-  "wbh_counts_matrix.csv",
+  "rnaseq/count/wbh_counts_matrix.csv",
   row.names = 1,
   check.names = FALSE
 )
