@@ -3,13 +3,13 @@ title: "Gene Set Enrichment Analysis (GSEA): Whole Body Hyperthermia (WBH) Treat
 author: "Victoria Chen, Anisha Kolambe, Ethan Aidam"
 date: "Presented Monday, May 11"
 output:
-  pdf_document:
-    toc: true
-    highlight: tango
   html_document:
     toc: true
     toc_float: true
     theme: flatly
+    highlight: tango
+  pdf_document:
+    toc: true
     highlight: tango
 ---
 
@@ -30,6 +30,10 @@ knitr::opts_chunk$set(
 
 This analysis starts from the STAR-derived raw gene count matrix (`wbh_counts_matrix.csv`) and walks through quality filtering, differential expression with DESeq2, and a custom implementation of Gene Set Enrichment Analysis (GSEA). We test four biologically motivated gene sets, heat shock/proteostasis, interferon signaling, serotonin, and dopamine, for coordinated expression changes between Whole Body Hyperthermia (WBH)-treated and sham-treated samples.
 
+## Biological Context
+
+This dataset contains RNA-bulk sequencing data from 19 whole blood samples of individuals with Major Depressive Disorder (MDD), collected 30 minutes after Whole Body Hyperthermia (WBH) treatment or sham treatment. This data is referenced from Akonom et. al’s paper (https://doi.org/10.1016/j.bbih.2026.101225), with more specific information regarding individual sample metadata found at (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA1287674&o=acc_s%3Aa). The original study aimed to compare the whole-blood transcriptomic response in hopes of identifying how biological pathways relevant to MDD may have been affected post-WBH, especially since WBH individuals exhibited sustained antidepressant effects without the side effects typically posed by common antidepressant drugs. We hope to recapitulate the upregulation in heat shock and immune pathways observed in the pathway, while also investigating if there are enrichment in molecular mechanism pathways related to neurotransmitters such as dopamine and serotonin (that current pharmacotherapies typically act on).
+
 ## Load libraries
 
 ```{r load-libraries}
@@ -44,11 +48,11 @@ library(gt)
 
 ## Load raw STAR count matrix
 
-Column names are cleaned of BAM and tab-file suffixes added by STAR, and Ensembl gene IDs are mapped to HGNC symbols using `org.Hs.eg.db`. Genes with no matching symbol retain their Ensembl ID, and all row names are made unique before downstream use.
+Column names are cleaned of BAM and tab-file suffixes added by STAR (RNA-seq alignment software), and Ensembl gene IDs are mapped to HGNC (gene id) symbols using `org.Hs.eg.db` to match the notation typically used in GSEA gene sets for better compatability. Genes with no matching symbol retain their Ensembl ID, and all row names are made unique before downstream use to avoid errors and resolve possible multimapping (possibility that Ensembl IDs may map to the same gene symbol due to transcriptional variants or overlapping loci.).
 
 ```{r load-counts}
 cnt <- read.csv(
-  "rnaseq/count/wbh_counts_matrix.csv",
+  "wbh_counts_matrix.csv",
   row.names = 1,
   check.names = FALSE
 )
@@ -94,7 +98,7 @@ head(cnt[, 1:min(4, ncol(cnt))])
 
 ## Define Sham versus WBH groups
 
-Each of the 19 samples are assigned to either the WBH group (10 samples) or the Sham group (9 samples) using a manually curated sample table keyed by SRR accession. `Sham` is set as the reference level throughout. A design matrix with an intercept and a `groupWBH` indicator is created for modeling.
+Each of the 19 samples are assigned to either the WBH group (10 samples) or the Sham group (9 samples) using a manually curated sample table keyed by SRR accession. `Sham` is set as the reference level throughout. A design matrix with an intercept and a `groupWBH` indicator is created for modeling. The intercept represents the baseline level of expression (control) while the group indicator models the change caused by the experimental group using a variable (0 for sham, 1 for WBH) to represent the difference between the reference and WBH groups.
 
 ```{r define-groups}
 sample_info <- tibble(
@@ -141,7 +145,7 @@ design
 
 ## Filter genes by CPM
 
-Lowly expressed genes are removed by retaining only those with a count-per-million (CPM) greater than 1 in at least 2 samples. This step eliminates genes that are essentially absent from the data  A `DGEList` object is then constructed and TMM normalization factors are computed.
+Lowly expressed genes are removed by retaining only those with a count-per-million (CPM) greater than 1 in at least 2 samples. This step eliminates genes that are essentially absent from the data, since they will contribute more noise than true signal in analysis. This also increases computational testing efficiency and decreases the multiple testing burden (thereby increasing the statistical power to find meaningful differences in remaining genes) A `DGEList` object is then constructed and TMM normalization factors are computed.
 
 ```{r filter-genes}
 cpm_vals     <- cpm(cnt)
@@ -171,7 +175,7 @@ dge$samples
 
 ## Run DESeq2
 
-DESeq2 is used to fit a negative-binomial model for each gene with `group` as the sole covariate, contrasting WBH against Sham.
+DESeq2 is used to fit a negative-binomial model (accounts for overdispersion typically seen in RNA-seq data) for each gene with group as the sole covariate, contrasting WBH against Sham.
 
 ```{r run-deseq2}
 dds <- DESeqDataSetFromMatrix(
@@ -430,10 +434,12 @@ gsea_df <- gsea_pheno_perm(
 
 None of the four gene sets reach statistical significance after multiple-testing correction (all BH-adjusted p-values >= 0.844). The heat shock/proteostasis set shows the most positive NES (1.103), consistent with the expected cellular response to elevated temperature, while the dopamine, serotonin, and interferon sets all have negative NES values, suggesting slight depletion relative to chance.
 
+These results are likely affected by the use of phenotype permutations with a limited sample size. With only 19 individuals, the number of distinct phenotype relabelings is limited, and random shuffles can produce enrichment scores similar to the observed score when the biological signal is subtle. The ranked list here uses log2 fold change only; an alternative weighted statistic such as `sign(log2FC) * -log10(pvalue)` may prioritize genes that are both strongly changed and statistically reliable.
+
 
 ```{r gsea-results}
 gene_set_labels <- c(
-  heat_shock_proteostasis = "Heat Shock Proteasis",
+  heat_shock_proteostasis = "Heat Shock Proteostasis",
   dopamine                = "Dopamine",
   serotonin               = "Serotonin",
   interferon_signaling    = "Interferon Signaling"
@@ -571,6 +577,192 @@ plot_gsea_es(
   gene_set_name = gene_set_labels[["dopamine"]]
 )
 ```
+
+
+## Reproduce GSEA using Broad Institute Software using DESeq2
+
+We can also recreate GSEA enrichment plots using the software app rather than running the manual pipeline. Using the same starting counts matrix, we perform data cleaning, id mapping, and low-expression filtering in an analogous manner to above. We also include sex as a confounding variable in the design matrix and pre-rank the genes using (sign of Fold Change * -log10 of P-value) score in decreasing order. We’ve also removed reads that could not be mapped to a gene symbol since these typically represent on-coding RNAs, pseudogenes, or poorly characterized regions that may clutter our data. A ranked file is written (DE_WBH_Sex_Adjusted.rnk).
+
+```{r broad-deseq2-rnk, eval=FALSE}
+cnt <- read.csv("wbh_counts_matrix.csv", row.names = 1, check.names = FALSE)
+cnt <- as.matrix(cnt)
+
+# Clean sample names and Ensembl versions
+colnames(cnt) <- sub("\\.Aligned\\.sortedByCoord\\.out\\.bam$", "", basename(colnames(cnt))
+colnames(cnt) <- sub("\\.ReadsPerGene\\.out\\.tab$", "", colnames(cnt))
+ensembl_ids <- sub("\\..*$","", rownames(cnt))
+
+
+# Annotate with Symbols
+gene_annot <- AnnotationDbi::select(org.Hs.eg.db, keys = ensembl_ids,
+                                    columns = c("SYMBOL"), keytype = "ENSEMBL")
+gene_symbols <- gene_annot$SYMBOL[match(ensembl_ids, gene_annot$ENSEMBL)]
+gene_symbols[is.na(gene_symbols)] <- ensembl_ids[is.na(gene_symbols)]
+gene_symbols <- make.unique(gene_symbols)
+rownames(cnt) <- gene_symbols
+
+# Filtering
+cpm_vals <- edgeR::cpm(cnt)
+keep <- rowSums(cpm_vals > 1) >= 2
+cnt_filtered <- cnt[keep, ]
+
+# Only keep genes that were successfully renamed to Symbols
+cnt_final <- cnt_filtered[!grepl("ˆENSG", rownames(cnt_filtered)), ]
+
+# Define Metadata (19 Samples)
+sample_info <- tibble(
+  sample = c(
+    "SRR34413163", "SRR34413164", "SRR34413165", "SRR34413166", "SRR34413167",
+    "SRR34413168", "SRR34413169", "SRR34413170", "SRR34413171", "SRR34413172",
+    "SRR34413174", "SRR34413175", "SRR34413176", "SRR34413177", "SRR34413178",
+    "SRR34413179", "SRR34413180", "SRR34413181", "SRR34413182"
+  ),
+  group = factor(c(rep("WBH", 10), rep("Sham", 9)), levels = c("Sham", "WBH")),
+  sex = factor(c(
+    "M", "M", "M", "F", "F", "F", "F", "F", "F", "F",
+    "M", "M", "M", "M", "M", "F", "F", "F", "F"
+  ))
+) %>% as.data.frame()
+
+rownames(sample_info) <- sample_info$sample
+cnt_final <- cnt_final[, sample_info$sample]
+
+# Run DESeq2 with sex adjustment
+dds <- DESeqDataSetFromMatrix(
+  countData = round(cnt_final),
+  colData = sample_info,
+  design = ~ sex + group
+)
+
+dds <- DESeq(dds)
+
+res <- results(
+  dds,
+  contrast = c("group", "WBH", "Sham"),
+  alpha = 0.01
+)
+
+res_df <- as.data.frame(res) %>%
+  rownames_to_column("Gene") %>%
+  mutate(rank_score = sign(log2FoldChange) * -log10(pvalue)) %>%
+  arrange(desc(rank_score))
+
+write.table(
+  res_df[, c("Gene", "rank_score")],
+  "DE_WBH_Sex_Adjusted.rnk",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote = FALSE
+)
+
+# Check for specific heat-shock genes
+res_df %>%
+  filter(Gene %in% c("HSPA1A", "HSPA1B", "HSPA6", "DNAJB1"))
+
+# Significant genes
+sum(res_df$padj < 0.05, na.rm = TRUE)
+
+top_5_genes <- res_df %>%
+  filter(padj < 0.05) %>%
+  arrange(padj) %>%
+  dplyr::select(Gene, baseMean, log2FoldChange, pvalue, padj)
+
+print(top_5_genes)
+```
+
+## Reproduce GSEA using Broad Institute Software using edgeR
+
+Both DESeq2 and EdgeR use negative binomial distributions to model RNA-sequencing data, but they differ
+in how they normalize data and handle dispersion. EdgeR uses Trimmed Mean of M-values that trims the
+most high and low expressed genes. In comparison, DESeq2 uses Median of Ratios which scales libraries
+using a pseudo-reference gene for normalization. For dispersion, EdgeR uses the Quasi-Likelihood (QL)
+F-test which is much more conservative than DESeq2’s Wald Test methodology in controlling false positive.
+However, unlike DESeq2, EdgeR does not have a method of managing outliers. Overall, EdgeR is better at
+sensitivity for low-expresion genes and is preferred for small sample sizes. This code will produce a ranked
+file called (edgeR_WBH_Sex_Adjusted.rnk).
+
+
+```{r broad-edger-rnk, eval=FALSE}
+design <- model.matrix(~ sex + group, data = sample_info)
+
+dge <- DGEList(counts = cnt_final)
+dge <- calcNormFactors(dge)
+dge <- estimateDisp(dge, design)
+
+fit <- glmQLFit(dge, design)
+qlf <- glmQLFTest(fit, coef = "groupWBH")
+
+res_edger <- as.data.frame(topTags(qlf, n = Inf)) %>%
+  rownames_to_column("Gene") %>%
+  mutate(rank_score = sign(logFC) * -log10(PValue)) %>%
+  arrange(desc(rank_score))
+
+write.table(
+  res_edger[, c("Gene", "rank_score")],
+  "edgeR_WBH_Sex_Adjusted.rnk",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote = FALSE
+)
+
+res_edger %>%
+  filter(Gene %in% c("HSPA1A", "HSPA1B", "HSPA6", "DNAJB1"))
+
+sum(res_edger$FDR < 0.05, na.rm = TRUE)
+
+top_5_genes <- res_edger %>%
+  filter(FDR < 0.05) %>%
+  arrange(FDR) %>%
+  dplyr::select(Gene, logCPM, logFC, PValue, FDR)
+
+print(top_5_genes)
+```
+
+In the GSEA app, load the ranked files using the load data tab in the left side of the screen. Since we have preranked the data, choose the "Run GSEAPreranked" option under Tools and use the settings shown below.
+
+
+```{r gsea-app-settings-figure, echo=FALSE, out.width="85%", fig.align="center", fig.cap="GSEA application settings for preranked analysis"}
+knitr::include_graphics("gsea_app_ui.png")
+```
+
+Since we want to investigate molecular mechanisms in additional to biological pathways, we will use 3 different gene datasets including:
+
+* `ftp.broadinstitute.org://pub/gsea/msigdb/human/gene_sets/h.all.v2026.1.Hs.symbols.gmt`
+* `ftp.broadinstitute.org://pub/gsea/msigdb/human/gene_sets/c2.cp.reactome.v2026.1.Hs.symbols.gmt`
+* `ftp.broadinstitute.org://pub/gsea/msigdb/human/gene_sets/c5.go.bp.v2026.1.Hs.symbols.gmt`
+
+After running the analysis, these were the following results obtained for the DESeq2 preranked list and EdgeR preranked lists respectively:
+
+
+You're right — the previous chunk only included the EdgeR figures.
+
+Add these two chunks before the EdgeR figure chunks to exactly mirror the PDF structure:
+
+
+```{r deseq2-results-figure, echo=FALSE, out.width="85%", fig.align="center", fig.cap="DESeq2 Results"}
+knitr::include_graphics("deseq2_results.png")
+```
+
+```{r deseq2-upregulated-figure, echo=FALSE, out.width="85%", fig.align="center", fig.cap="DESeq2 Upregulated"}
+knitr::include_graphics("deseq2_upregulated.png")
+```
+
+```{r edger-results-figure, echo=FALSE, out.width="85%", fig.align="center", fig.cap="EdgeR Results"}
+knitr::include_graphics("edger_results.png")
+```
+
+```{r edger-upregulated-figure, echo=FALSE, out.width="85%", fig.align="center", fig.cap="EdgeR Upregulated"}
+knitr::include_graphics("edger_upregulated.png")
+```
+
+While our GSEA results don't exactly match the paper's (likely due to differences in raw gene counts, sample subset that was used, differences in mapping/annotation methodology, removal of outliers, and other aspects mentioned in our presentation), we can see that our GSEA results show upregulation in heat shock and neuronal pathways in the WBH condition for both DESeq and EdgeR respectively. This matches the expected biological context that the experiment was conducted in (pathways that are relevant to MDD and exposure to high heat). The EdgeR results were a bit more sensitive and significant comparative to the DESeq2 results, possibly because the strength of our biological signal and low sample size made this methodology a bit more robust given our conditions.
+
+Clicking on individual pathways shows the gene enrichment plots. The peaks are consistently sharp and occur at the leftmost side of the graph. Genes with lower NES and significance show more rounded peaks that are present closer to the middle.
+
+Overall, although we cannot make conclusive statements regarding WBH treatment and the enrichment of serotonin/dopamine transport pathways, our GSEA results still align with the overall broader trends within our expectations, with upregulation of pathways regarding neuronal activity and synaptic transmission which are implicated in depression studies as well as heat shock protein production and protein folding.
+
 
 ## Session info
 
